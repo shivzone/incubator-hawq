@@ -23,14 +23,10 @@ package org.apache.hawq.pxf.plugins.hive;
 import org.apache.hadoop.hive.ql.io.orc.OrcInputFormat;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory;
-import org.apache.hadoop.mapred.InputSplit;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapred.Reporter;
 import org.apache.hawq.pxf.api.FilterParser;
 import org.apache.hawq.pxf.api.utilities.ColumnDescriptor;
 import org.apache.hawq.pxf.api.utilities.InputData;
 import org.apache.commons.lang.StringUtils;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -56,7 +52,7 @@ public class HiveORCAccessor extends HiveAccessor {
      */
     public HiveORCAccessor(InputData input) throws Exception {
         super(input, new OrcInputFormat());
-        String[] toks = HiveInputFormatFragmenter.parseToks(input, PXF_HIVE_SERDES.COLUMNAR_SERDE.name(), PXF_HIVE_SERDES.LAZY_BINARY_COLUMNAR_SERDE.name(), PXF_HIVE_SERDES.ORC_SERDE.name(), PXF_HIVE_SERDES.VECTORIZED_ORC_SERDE.name());
+        String[] toks = HiveInputFormatFragmenter.parseToks(input, PXF_HIVE_SERDES.ORC_SERDE.name());
         initPartitionFields(toks[HiveInputFormatFragmenter.TOK_KEYS]);
         filterInFragmenter = new Boolean(toks[HiveInputFormatFragmenter.TOK_FILTER_DONE]);
     }
@@ -142,8 +138,6 @@ public class HiveORCAccessor extends HiveAccessor {
                 break;
             case HDOP_NE:
                 builder.startNot().equals(filterColumnName, filterValue).end();
-                break;
-            case HDOP_LIKE:
                 break;
         }
         return;

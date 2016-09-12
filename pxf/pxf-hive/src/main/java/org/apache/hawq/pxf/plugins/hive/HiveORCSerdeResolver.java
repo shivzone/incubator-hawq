@@ -19,35 +19,23 @@ package org.apache.hawq.pxf.plugins.hive;
  * under the License.
  */
 
-import org.apache.commons.lang.CharUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.ql.io.orc.OrcSerde;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.objectinspector.*;
-import org.apache.hadoop.hive.serde2.objectinspector.primitive.*;
-import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.hawq.pxf.api.BadRecordException;
 import org.apache.hawq.pxf.api.OneField;
 import org.apache.hawq.pxf.api.OneRow;
 import org.apache.hawq.pxf.api.UnsupportedTypeException;
 import org.apache.hawq.pxf.api.io.DataType;
 import org.apache.hawq.pxf.api.utilities.ColumnDescriptor;
 import org.apache.hawq.pxf.api.utilities.InputData;
-import org.apache.hawq.pxf.api.utilities.Utilities;
-import org.apache.hawq.pxf.plugins.hdfs.utilities.HdfsUtilities;
+import org.apache.hawq.pxf.plugins.hive.utilities.HiveUtilities;
 
-import java.io.IOException;
-import java.math.BigDecimal;
 import java.util.*;
-
-import static org.apache.hawq.pxf.api.io.DataType.*;
-import static org.apache.hawq.pxf.api.io.DataType.DATE;
-import static org.apache.hawq.pxf.api.io.DataType.SMALLINT;
 
 /**
  * Specialized HiveResolver for a Hive table stored as RC file.
@@ -56,15 +44,9 @@ import static org.apache.hawq.pxf.api.io.DataType.SMALLINT;
 public class HiveORCSerdeResolver extends HiveResolver {
     private static final Log LOG = LogFactory.getLog(HiveORCSerdeResolver.class);
     private OrcSerde deserializer;
-    private boolean firstColumn;
-    private StringBuilder builder;
     private StringBuilder parts;
     private int numberOfPartitions;
     private HiveInputFormatFragmenter.PXF_HIVE_SERDES serdeType;
-    private static final String MAPKEY_DELIM = ":";
-    private static final String COLLECTION_DELIM = ",";
-    private String collectionDelim;
-    private String mapkeyDelim;
 
     public HiveORCSerdeResolver(InputData input) throws Exception {
         super(input);
@@ -80,7 +62,6 @@ public class HiveORCSerdeResolver extends HiveResolver {
         } else {
             throw new UnsupportedTypeException("Unsupported Hive Serde: " + serdeEnumStr);
         }
-        parts = new StringBuilder();
         partitionKeys = toks[HiveInputFormatFragmenter.TOK_KEYS];
         parseDelimiterChar(input);
         collectionDelim = input.getUserProperty("COLLECTION_DELIM") == null ? COLLECTION_DELIM
@@ -91,6 +72,7 @@ public class HiveORCSerdeResolver extends HiveResolver {
 
     @Override
     void initPartitionFields() {
+        parts = new StringBuilder();
         numberOfPartitions = initPartitionFields(parts);
     }
 
@@ -117,7 +99,7 @@ public class HiveORCSerdeResolver extends HiveResolver {
      * but its implementations (ColumnarSerDe, LazyBinaryColumnarSerDe) still use the deprecated interface.
      */
     @SuppressWarnings("deprecation")
-	@Override
+    @Override
     void initSerde(InputData input) throws Exception {
         Properties serdeProperties = new Properties();
         int numberOfDataColumns = input.getColumns() - numberOfPartitions;
@@ -126,14 +108,17 @@ public class HiveORCSerdeResolver extends HiveResolver {
 
         StringBuilder columnNames = new StringBuilder(numberOfDataColumns * 2); // column + delimiter
         StringBuilder columnTypes = new StringBuilder(numberOfDataColumns * 2); // column + delimiter
-        String delim = "";
+        String delim = ",";
         for (int i = 0; i < numberOfDataColumns; i++) {
             ColumnDescriptor column = input.getColumn(i);
             String columnName = column.columnName();
-            String columnType = HiveInputFormatFragmenter.toHiveType(DataType.get(column.columnTypeCode()), columnName);
-            columnNames.append(delim).append(columnName);
-            columnTypes.append(delim).append(columnType);
-            delim = ",";
+            String columnType = HiveUtilities.toCompatibleHiveType(DataType.get(column.columnTypeCode()), column.columnTypeModifiers());
+            if(i > 0) {
+                columnNames.append(delim);
+                columnTypes.append(delim);
+            }
+            columnNames.append(columnName);
+            columnTypes.append(columnType);
         }
         serdeProperties.put(serdeConstants.LIST_COLUMNS, columnNames.toString());
         serdeProperties.put(serdeConstants.LIST_COLUMN_TYPES, columnTypes.toString());

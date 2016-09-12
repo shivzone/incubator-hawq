@@ -44,8 +44,7 @@ typedef enum PxfOperatorCode
 	PXFOP_GE,
 	PXFOP_EQ,
 	PXFOP_NE,
-	PXFOP_AND,
-	PXFOP_LIKE
+	PXFOP_AND
 
 } PxfOperatorCode;
 
@@ -103,5 +102,6 @@ static inline bool pxfoperand_is_const(PxfOperand x)
 }
 
 char *serializePxfFilterQuals(List *quals);
+List* extractPxfAttributes(List* quals);
 
 #endif // _PXF_FILTERS_H_

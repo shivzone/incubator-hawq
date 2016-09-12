@@ -38,6 +38,7 @@ static char* pxf_serialize_filter_list(List *filters);
 static bool opexpr_to_pxffilter(OpExpr *expr, PxfFilterDesc *filter);
 static bool supported_filter_type(Oid type);
 static void const_to_str(Const *constval, StringInfo buf);
+static List* append_attr_from_var(Var* var, List* attrs);
 
 /*
  * All supported HAWQ operators, and their respective HFDS operator code.
@@ -78,7 +79,6 @@ dbop_pxfop_map pxf_supported_opr[] =
 	{665 /* text_le */, PXFOP_LE},
 	{667 /* text_ge */, PXFOP_GE},
 	{531 /* textlt  */, PXFOP_NE},
-	{1209 /* textlike  */, PXFOP_LIKE},
 
 	/* int2 to int4 */
 	{Int24EqualOperator /* int24eq */, PXFOP_EQ},
@@ -126,48 +126,7 @@ dbop_pxfop_map pxf_supported_opr[] =
 	{1871 /* int82gt */, PXFOP_GT},
 	{1872 /* int82le */, PXFOP_LE},
 	{1873 /* int82ge */, PXFOP_GE},
-	{1869 /* int82ne */, PXFOP_NE},
-
-	/**************FLOAT****************/
-	/* float4 */
-	{Float4EqualOperator  /* float4eq */, PXFOP_EQ},
-	{622  /* float4lt */, PXFOP_LT},
-	{623 /* float4gt */, PXFOP_GT},
-	{624 /* float4le */, PXFOP_LE},
-	{625 /* float4ge */, PXFOP_GE},
-	{621 /* float4ne */, PXFOP_NE},
-
-	/* float8 */
-	{Float8EqualOperator  /* float8eq */, PXFOP_EQ},
-	{672  /* float8lt */, PXFOP_LT},
-	{674 /* float8gt */, PXFOP_GT},
-	{673 /* float8le */, PXFOP_LE},
-	{675 /* float8ge */, PXFOP_GE},
-	{671 /* float8ne */, PXFOP_NE},
-
-	/* float48 */
-	{1120  /* float48eq */, PXFOP_EQ},
-	{1122  /* float48lt */, PXFOP_LT},
-	{1123 /* float48gt */, PXFOP_GT},
-	{1124 /* float48le */, PXFOP_LE},
-	{1125 /* float48ge */, PXFOP_GE},
-	{1121 /* float48ne */, PXFOP_NE},
-
-	/* float84 */
-	{1130  /* float84eq */, PXFOP_EQ},
-	{1132  /* float84lt */, PXFOP_LT},
-	{1133 /* float84gt */, PXFOP_GT},
-	{1134 /* float84le */, PXFOP_LE},
-	{1135 /* float84ge */, PXFOP_GE},
-	{1131 /* float84ne */, PXFOP_NE},
-
-	/**********DATE************/
-	{DateEqualOperator  /* eq */, PXFOP_EQ},
-	{1095  /* date_lt */, PXFOP_LT},
-	{1097 /* date_gt */, PXFOP_GT},
-	{1096 /* date_le */, PXFOP_LE},
-	{1098 /* date_ge */, PXFOP_GE},
-	{1094 /* date_ne */, PXFOP_NE}
+	{1869 /* int82ne */, PXFOP_NE}
 
 };
 
@@ -184,8 +143,7 @@ Oid pxf_supported_types[] =
 	BPCHAROID,
 	CHAROID,
 	BYTEAOID,
-	BOOLOID,
-	DATEOID
+	BOOLOID
 };
 
 /*
@@ -494,6 +452,51 @@ opexpr_to_pxffilter(OpExpr *expr, PxfFilterDesc *filter)
 	return false;
 }
 
+static List*
+append_attr_from_var(Var* var, List* attrs)
+{
+	AttrNumber varattno = var->varattno;
+	/* system attr not supported */
+	if (varattno > InvalidAttrNumber)
+		return lappend_int(attrs, varattno - 1);
+
+	return attrs;
+}
+
+static List*
+get_attrs_from_expr(Expr *expr)
+{
+	Node	*leftop 	= NULL;
+	Node	*rightop	= NULL;
+	List	*attrs = NIL;
+
+	if ((!expr))
+		return attrs;
+
+	if (IsA(expr, OpExpr))
+	{
+		leftop = get_leftop(expr);
+		rightop	= get_rightop(expr);
+	} else if (IsA(expr, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) expr;
+		leftop = (Node *) linitial(saop->args);
+		rightop = (Node *) lsecond(saop->args);
+	}
+
+	if (IsA(leftop, Var))
+	{
+		attrs = append_attr_from_var((Var *) leftop, attrs);
+	}
+	if (IsA(leftop, Const))
+	{
+		attrs = append_attr_from_var((Var *) rightop, attrs);
+	}
+
+	return attrs;
+
+}
+
 /*
  * supported_filter_type
  *
@@ -556,7 +559,6 @@ const_to_str(Const *constval, StringInfo buf)
 		case BPCHAROID:
 		case CHAROID:
 		case BYTEAOID:
-		case DATEOID:
 			appendStringInfo(buf, "\\\"%s\\\"", extval);
 			break;
 
@@ -579,6 +581,7 @@ const_to_str(Const *constval, StringInfo buf)
 
 	pfree(extval);
 }
+
 
 /*
  * serializePxfFilterQuals
@@ -607,3 +610,62 @@ char *serializePxfFilterQuals(List *quals)
 	return result;
 }
 
+
+/*
+ * Returns a list of attributes, extracted from quals.
+ * Supports AND, OR, NOT operations.
+ * Supports =, <, <=, >, >=, IS NULL, IS NOT NULL, BETWEEN, IN operators.
+ * List might contain duplicates.
+ * Caller should release memory once result is not needed.
+ */
+List* extractPxfAttributes(List* quals)
+{
+
+	ListCell		*lc = NULL;
+	List *attributes = NIL;
+
+	if (list_length(quals) == 0)
+		return NIL;
+
+	foreach (lc, quals)
+	{
+		Node *node = (Node *) lfirst(lc);
+		NodeTag tag = nodeTag(node);
+
+		switch (tag)
+		{
+			case T_OpExpr:
+			case T_ScalarArrayOpExpr:
+			{
+				Expr* expr = (Expr *) node;
+				List			*attrs = get_attrs_from_expr(expr);
+				attributes = list_concat(attributes, attrs);
+				break;
+			}
+			case T_BoolExpr:
+			{
+				BoolExpr* expr = (BoolExpr *) node;
+				List *inner_result = extractPxfAttributes(expr->args);
+				attributes = list_concat(attributes, inner_result);
+				break;
+			}
+			case T_NullTest:
+			{
+				NullTest* expr = (NullTest *) node;
+				attributes = append_attr_from_var((Var *) expr->arg, attributes);
+				break;
+			}
+			default:
+				/*
+				 * tag is not supported, it's risk of having:
+				 * 1) false-positive tuples
+				 * 2) unable to join tables
+				 * 3) etc
+				 */
+				elog(ERROR, "extractPxfAttributes: unsupported node tag %d, unable to extract attribute from qualifier", tag);
+				break;
+		}
+	}
+
+	return attributes;
+}
