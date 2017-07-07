@@ -305,6 +305,12 @@ project('pxf-service') {
     }
 }
 
+project('pxf-api') {
+    dependencies {
+        compile "org.apache.kafka:kafka-clients:$kafkaVersion"
+    }
+}
+
 project('pxf') {
     jar.enabled = false
     ospackage {
